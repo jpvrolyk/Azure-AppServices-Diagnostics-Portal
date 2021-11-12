@@ -147,7 +147,7 @@ export class DaasV2Component implements OnInit, OnDestroy {
       .subscribe(activeSession => {
         this.operationInProgress = false;
         this.operationStatus = '';
-        if (activeSession) {
+        if (activeSession && activeSession.Tool === this.diagnoserName) {
           this.sessionInProgress = true;
           this.initWizard();
           this.updateInstanceInformationOnLoad();
@@ -163,7 +163,7 @@ export class DaasV2Component implements OnInit, OnDestroy {
   pollRunningSession(sessionId: string) {
     this._daasService.getSession(this.siteToBeDiagnosed, sessionId)
       .subscribe(activeSession => {
-        if (activeSession != null) {
+        if (activeSession != null && activeSession.Tool === this.diagnoserName) {
           this.populateSessionInformation(activeSession);
 
           if (activeSession.Status != "Active") {
