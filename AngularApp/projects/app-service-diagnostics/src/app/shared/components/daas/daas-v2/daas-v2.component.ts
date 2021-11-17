@@ -200,20 +200,23 @@ export class DaasV2Component implements OnInit, OnDestroy {
 
     if (activeInstance.Status == "Started") {
       this.sessionStatus = 2;
-      let messageCount = activeInstance.CollectorStatusMessages.length;
-      if (messageCount > 0) {
-        this.WizardStepStatus = activeInstance.CollectorStatusMessages[messageCount - 1];
-      } else {
-        this.WizardStepStatus = "";
+      if (Array.isArray(activeInstance.CollectorStatusMessages)) {
+        let messageCount = activeInstance.CollectorStatusMessages.length;
+        if (messageCount > 0) {
+          this.WizardStepStatus = activeInstance.CollectorStatusMessages[messageCount - 1];
+        } else {
+          this.WizardStepStatus = "";
+        }
       }
     } else if (activeInstance.Status == "Analyzing") {
       this.sessionStatus = 3;
-      this.activeInstance = activeInstance;
-      let messageCount = activeInstance.AnalyzerStatusMessages.length;
-      if (messageCount > 0) {
-        this.WizardStepStatus = activeInstance.CollectorStatusMessages[messageCount - 1];
-      } else {
-        this.WizardStepStatus = "";
+      if (Array.isArray(activeInstance.AnalyzerStatusMessages)) {
+        let messageCount = activeInstance.AnalyzerStatusMessages.length;
+        if (messageCount > 0) {
+          this.WizardStepStatus = activeInstance.CollectorStatusMessages[messageCount - 1];
+        } else {
+          this.WizardStepStatus = "";
+        }
       }
     }
 
