@@ -15,7 +15,27 @@ import { RecommendedUtterance } from '../../../../../../diagnostic-data/src/publ
 import { TelemetryService } from '../../../../../../diagnostic-data/src/lib/services/telemetry/telemetry.service';
 import {TelemetryEventNames} from '../../../../../../diagnostic-data/src/lib/services/telemetry/telemetry.common';
 import { environment } from '../../../../environments/environment';
-import {ActivatedRoute, Params} from "@angular/router";
+import {ActivatedRoute, Params, Router} from "@angular/router";
+import {DiagnosticApiService} from "../../../shared/services/diagnostic-api.service";
+import { listen, MessageConnection } from 'vscode-ws-jsonrpc';
+import ReconnectingWebSocket from 'reconnecting-websocket';
+import {WebSocket} from "ws";
+import {
+  MonacoLanguageClient, CloseAction, ErrorAction,
+  MonacoServices, createConnection
+} from 'monaco-languageclient';
+import { v4 as uuid } from 'uuid';
+
+const codePrefix = `// *****PLEASE DO NOT MODIFY THIS PART*****
+using Diagnostics.DataProviders;
+using Diagnostics.ModelsAndUtils.Utilities;
+using Diagnostics.ModelsAndUtils.Models;
+using Diagnostics.ModelsAndUtils.Models.ResponseExtensions;
+using Diagnostics.ModelsAndUtils.Attributes;
+using Diagnostics.ModelsAndUtils.ScriptUtilities;
+using Kusto.Data;
+//*****END OF DO NOT MODIFY PART*****
+`;
 
 const moment = momentNs;
 const newDetectorId:string = "NEW_DETECTOR";
@@ -87,18 +107,28 @@ export class OnboardingFlowComponent implements OnInit {
   initialized = false;
   codeLoaded: boolean = false;
 
+  codeCompletionEnabled: boolean = false;
+  languageServerUrl: any = null;
+
   private publishingPackage: Package;
   private userName: string;
 
   private emailRecipients: string = '';
   private _monacoEditor:monaco.editor.ICodeEditor = null;
   private _oldCodeDecorations:string[] = [];
-  
+
+  detectorGraduation: boolean;
+  PPERedirectTimer: number = 10;
+  redirectTimer: NodeJS.Timer;
+  isProd: boolean = true;
+  PPELink: string;
+  PPEHostname: string;
+  HealthStatus = HealthStatus;
 
   constructor(private cdRef: ChangeDetectorRef, private githubService: GithubApiService,
-    private diagnosticApiService: ApplensDiagnosticService, private resourceService: ResourceService,
+    private diagnosticApiService: ApplensDiagnosticService, private _diagnosticApi: DiagnosticApiService, private resourceService: ResourceService,
     private _detectorControlService: DetectorControlService, private _adalService: AdalService,
-    public ngxSmartModalService: NgxSmartModalService, private _telemetryService: TelemetryService, private _activatedRoute: ActivatedRoute) {
+    public ngxSmartModalService: NgxSmartModalService, private _telemetryService: TelemetryService, private _activatedRoute: ActivatedRoute, private _router: Router) {
     this.editorOptions = {
       theme: 'vs',
       language: 'csharp',
@@ -138,11 +168,111 @@ export class OnboardingFlowComponent implements OnInit {
       this.initialized = true;
       this._telemetryService.logPageView(TelemetryEventNames.OnboardingFlowLoaded, {});
     }
+
+    this.detectorGraduation = true;
+    this.diagnosticApiService.getDevopsConfig(`${this.resourceService.ArmResource.provider}/${this.resourceService.ArmResource.resourceTypeName}`).subscribe(devopsConfig => {
+      this.detectorGraduation = devopsConfig.graduationEnabled;
+
+      this.diagnosticApiService.getPPEHostname().subscribe(host => {
+        this.PPEHostname = host;
+        this.diagnosticApiService.getDetectorDevelopmentEnv().subscribe(env => {
+          this.PPELink = `${this.PPEHostname}${this._router.url}`
+          this.isProd = env === "Prod";
+          if (this.isProd && this.detectorGraduation){
+            this.redirectTimer = setInterval(() => {
+              this.PPERedirectTimer = this.PPERedirectTimer - 1;
+              if (this.PPERedirectTimer === 0){
+                window.location.href = this.PPELink;
+                clearInterval(this.redirectTimer);
+              }
+            }, 1000);
+          }
+        });
+      });
+    });
+  }
+
+  addCodePrefix(codeString) {
+    if (this.codeCompletionEnabled) {
+      var isLoadIndex = codeString.indexOf("#load");
+      // If gist is being loaded in the code
+      if (isLoadIndex>=0) {
+        codeString = codeString.replace(codePrefix, "");
+        var splitted = codeString.split("\n");
+        var lastIndex = splitted.slice().reverse().findIndex(x => x.startsWith("#load"));
+        lastIndex = lastIndex>0? splitted.length-1-lastIndex: lastIndex;
+        if (lastIndex>=0) {
+          var finalJoin = [...splitted.slice(0, lastIndex+1), codePrefix, ...splitted.slice(lastIndex+1,)].join("\n");
+          return finalJoin;
+        }
+      }
+      // No gist scenario
+      return codePrefix + codeString;
+    }
+    return codeString;
   }
 
   onInit(editor: any) {
-    this._monacoEditor = editor;    
+    this._monacoEditor = editor;
+    let getEnabled = this._diagnosticApi.get('api/appsettings/CodeCompletion:Enabled');
+    let getServerUrl = this._diagnosticApi.get('api/appsettings/CodeCompletion:LangServerUrl');
+    forkJoin([getEnabled, getServerUrl]).subscribe(resList => {
+      this.codeCompletionEnabled = resList[0] == true || resList[0].toString().toLowerCase() == "true";
+      this.languageServerUrl = resList[1];
+      if (this.codeCompletionEnabled && this.languageServerUrl && this.languageServerUrl.length > 0) {
+        if (this.code.indexOf(codePrefix) < 0) {
+          this.code = this.addCodePrefix(this.code);
+        }
+        let fileName = uuid();
+        let editorModel = monaco.editor.createModel(this.code, 'csharp', monaco.Uri.parse(`file:///workspace/${fileName}.cs`));
+        editor.setModel(editorModel);
+        MonacoServices.install(editor, {rootUri: "file:///workspace"});
+        const webSocket = this.createWebSocket(this.languageServerUrl);
+        listen({
+          webSocket,
+          onConnection: connection => {
+              // create and start the language client
+              const languageClient = this.createLanguageClient(connection);
+              const disposable = languageClient.start();
+              connection.onClose(() => disposable.dispose());
+          }
+        });
+      }
+    });
  }
+
+ createLanguageClient(connection: MessageConnection): MonacoLanguageClient {
+  return new MonacoLanguageClient({
+      name: "AppLens Language Client",
+      clientOptions: {
+          // use a language id as a document selector
+          documentSelector: ['csharp'],
+          // disable the default error handler
+          errorHandler: {
+              error: () => ErrorAction.Continue,
+              closed: () => CloseAction.DoNotRestart
+          }
+      },
+      // create a language client connection from the JSON RPC connection on demand
+      connectionProvider: {
+          get: (errorHandler, closeHandler) => {
+              return Promise.resolve(createConnection(connection, errorHandler, closeHandler))
+          }
+      }
+  });
+}
+
+createWebSocket(url: string): WebSocket {
+  const socketOptions = {
+      maxReconnectionDelay: 10000,
+      minReconnectionDelay: 1000,
+      reconnectionDelayGrowFactor: 1.3,
+      connectionTimeout: 10000,
+      maxRetries: 3,
+      debug: false
+  };
+  return new ReconnectingWebSocket(url, undefined, socketOptions);
+}
 
   ngOnChanges() {
     if (this.initialized) {
@@ -672,7 +802,7 @@ export class OnboardingFlowComponent implements OnInit {
     update.subscribe(_ => {
       this.publishingPackage = {
         id: queryResponse.invocationOutput.metadata.id,
-        codeString: code,
+        codeString: this.codeCompletionEnabled? code.replace(codePrefix, ""): code,
         committedByAlias: this.userName,
         dllBytes: this.compilationPackage.assemblyBytes,
         pdbBytes: this.compilationPackage.pdbBytes,
@@ -754,7 +884,7 @@ export class OnboardingFlowComponent implements OnInit {
 
     forkJoin(detectorFile, configuration, this.diagnosticApiService.getGists()).subscribe(res => {
       this.codeLoaded = true;
-      this.code = res[0];
+      this.code = this.addCodePrefix(res[0]);
       this.originalCode = this.code;
       if (res[1] !== null) {
         this.gists = Object.keys(this.configuration['dependencies']);
@@ -785,5 +915,9 @@ export class OnboardingFlowComponent implements OnInit {
     }
 
     return false;
+  }
+
+  ngOnDestroy(){
+    clearInterval(this.redirectTimer);
   }
 }

@@ -25,10 +25,7 @@
 
 .ms-Dropdown-optionText,.ms-Dropdown-title{
     font-size: 13px;
-}
-
-.ms-Dropdown-optionText{
-    margin-left: -5px;
+    overflow:unset;
 }
 
 .ms-Callout-container .ms-Callout-main{

@@ -150,7 +150,7 @@ export class DaasV2Component implements OnInit, OnDestroy {
         if (activeSession && activeSession.Tool === this.diagnoserName) {
           this.sessionInProgress = true;
           this.initWizard();
-          this.updateInstanceInformationOnLoad();
+          this.updateInstanceInformationOnLoad(activeSession.Instances);
           this.populateSessionInformation(activeSession);
           this.sessionId = activeSession.SessionId;
           this.subscription = interval(10000).subscribe(res => {
@@ -208,7 +208,7 @@ export class DaasV2Component implements OnInit, OnDestroy {
           this.WizardStepStatus = "";
         }
       }
-    } else if (activeInstance.Status == "Analyzing") {
+    } else if (activeInstance.Status == "Analyzing" || activeInstance.Status == "Complete") {
       this.sessionStatus = 3;
       if (Array.isArray(activeInstance.AnalyzerStatusMessages)) {
         let messageCount = activeInstance.AnalyzerStatusMessages.length;
@@ -230,14 +230,17 @@ export class DaasV2Component implements OnInit, OnDestroy {
     this.logFiles = logFiles;
   }
 
-  updateInstanceInformationOnLoad() {
+  updateInstanceInformationOnLoad(instances: string[]) {
     this.instancesStatus = new Map<string, number>();
-    this.instances.forEach(x => {
+    if (instances == null || instances.length == 0) {
+      return;
+    }
+
+    instances.forEach(x => {
       this.instancesStatus.set(x, 1);
     });
-    if (this.instances.length > 0) {
-      this.selectedInstance = this.instances[0];
-    }
+
+    this.selectedInstance = instances[0];
   }
 
   updateInstanceInformation() {
@@ -248,7 +251,7 @@ export class DaasV2Component implements OnInit, OnDestroy {
         this.instancesStatus.set(x, 1);
       });
 
-      this.selectedInstance = this.instances[0];
+      this.selectedInstance = this.instancesToDiagnose[0];
     }
   }
 
@@ -401,15 +404,14 @@ export class DaasV2Component implements OnInit, OnDestroy {
   }
 
   getInstanceNameFromReport(reportName: string): string {
-    if (!this.diagnoserNameLookup.startsWith('CLR Profiler')) {
-      return reportName;
+    if (this.diagnoserNameLookup.indexOf('Profiler') > -1
+      || this.diagnoserNameLookup.indexOf('MemoryDump') > -1
+      || this.diagnoserNameLookup.indexOf('Memory Dump') > -1) {
+      const reportNameArray = reportName.split('_');
+      if (reportNameArray.length > 0) {
+        return reportNameArray[0];
+      }
     }
-
-    const reportNameArray = reportName.split('_');
-    if (reportNameArray.length > 0) {
-      return reportNameArray[0];
-    } else {
-      return reportName;
-    }
+    return reportName;
   }
 }
